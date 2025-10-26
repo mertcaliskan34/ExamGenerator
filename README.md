@@ -176,12 +176,12 @@ The frontend application will be available at `http://localhost:3000`
 ```
 exam-generator/
 ├── backend/
-│   ├── server.py              # Main FastAPI application
-│   ├── requirements.txt       # Python dependencies
-│   └── .env                   # Environment variables
+│   ├── server.py             # Main FastAPI application
+│   ├── requirements.txt      # Python dependencies
+│   └── .env                  # Environment variables
 ├── frontend/
 │   ├── src/
-│   │   ├── components/        # Reusable UI components
+│   │   ├── components/       # Reusable UI components
 │   │   ├── pages/            # Application pages
 │   │   ├── hooks/            # Custom React hooks
 │   │   └── lib/              # Utility functions
