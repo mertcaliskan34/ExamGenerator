@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, File, UploadFile, status
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, File, UploadFile, Form, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -143,34 +143,85 @@ async def generate_exam_with_ai(pdf_text: str, exam_type: str, difficulty: str, 
         
         # Create prompt based on exam type
         type_instruction = {
-            "multiple_choice": "Create multiple choice questions with 4 options (A, B, C, D). Provide the correct answer letter.",
-            "true_false": "Create true/false questions. Answer should be 'True' or 'False'.",
-            "fill_blank": "Create fill-in-the-blank questions. Use '___' to indicate the blank. Provide the correct answer.",
-            "open_ended": "Create open-ended questions that require detailed answers. Provide a sample correct answer.",
-            "mixed": "Create a mix of multiple choice, true/false, fill-in-the-blank, and open-ended questions."
+            "multiple_choice": {
+                "instruction": "SADECE çoktan seçmeli sorular oluştur. Her soru için 4 seçenek (A, B, C, D) hazırla. Doğru cevap harfini belirt.",
+                "question_type": "multiple_choice"
+            },
+            "true_false": {
+                "instruction": "SADECE doğru/yanlış soruları oluştur. Cevap 'Doğru' veya 'Yanlış' olmalı.",
+                "question_type": "true_false"
+            },
+            "fill_blank": {
+                "instruction": "SADECE boşluk doldurma soruları oluştur. Boşluğu göstermek için '___' kullan. Doğru cevabı ver.",
+                "question_type": "fill_blank"
+            },
+            "open_ended": {
+                "instruction": "SADECE açık uçlu sorular oluştur. Detaylı cevaplar gerektiren sorular hazırla. Örnek doğru cevap ver.",
+                "question_type": "open_ended"
+            },
+            "mixed": {
+                "instruction": "Farklı türlerde sorular oluştur: çoktan seçmeli, doğru/yanlış, boşluk doldurma ve açık uçlu soruların karışımını yap.",
+                "question_type": "mixed"
+            }
         }
         
-        prompt = f"""You are an expert exam creator. Generate high-quality exam questions based on the provided content.
+        # Convert difficulty to Turkish
+        difficulty_turkish = {
+            "easy": "kolay",
+            "medium": "orta", 
+            "hard": "zor"
+        }.get(difficulty, difficulty)
+        
+        exam_instruction = type_instruction[exam_type]
+        
+        if exam_type == "mixed":
+            prompt = f"""Sen uzman bir sınav oluşturucususun. Verilen içeriğe dayalı olarak yüksek kaliteli sınav soruları oluştur.
 
-Based on the following content, create {num_questions} {difficulty} difficulty exam questions.
+Aşağıdaki içeriğe dayalı olarak {num_questions} adet {difficulty_turkish} zorluk seviyesinde sınav sorusu oluştur.
 
-{type_instruction[exam_type]}
+{exam_instruction["instruction"]}
 
-Content:
+İçerik:
 {pdf_text[:4000]}
 
-IMPORTANT: Return ONLY a valid JSON array with this exact structure:
+ÖNEMLİ: Sadece aşağıdaki yapıda geçerli bir JSON dizisi döndür:
 [
   {{
-    "question_text": "The question text here",
-    "question_type": "multiple_choice" or "true_false" or "fill_blank" or "open_ended",
-    "options": ["A. Option 1", "B. Option 2", "C. Option 3", "D. Option 4"] (only for multiple_choice),
-    "correct_answer": "The correct answer",
-    "explanation": "Brief explanation of the answer"
+    "question_text": "Soru metni burada",
+    "question_type": "multiple_choice" veya "true_false" veya "fill_blank" veya "open_ended",
+    "options": ["A. Seçenek 1", "B. Seçenek 2", "C. Seçenek 3", "D. Seçenek 4"] (sadece multiple_choice için),
+    "correct_answer": "Doğru cevap",
+    "explanation": "Cevabın kısa açıklaması"
   }}
 ]
 
-Do not include any text before or after the JSON array."""
+JSON dizisinden önce veya sonra herhangi bir metin ekleme. Tüm soruları ve açıklamaları Türkçe dilinde oluştur."""
+        else:
+            prompt = f"""Sen uzman bir sınav oluşturucususun. Verilen içeriğe dayalı olarak yüksek kaliteli sınav soruları oluştur.
+
+Aşağıdaki içeriğe dayalı olarak {num_questions} adet {difficulty_turkish} zorluk seviyesinde sınav sorusu oluştur.
+
+{exam_instruction["instruction"]}
+
+İçerik:
+{pdf_text[:4000]}
+
+ÖNEMLİ: 
+- TÜM sorular {exam_instruction["question_type"]} türünde olmalı
+- Sadece aşağıdaki yapıda geçerli bir JSON dizisi döndür:
+[
+  {{
+    "question_text": "Soru metni burada",
+    "question_type": "{exam_instruction["question_type"]}",
+    "options": ["A. Seçenek 1", "B. Seçenek 2", "C. Seçenek 3", "D. Seçenek 4"] (sadece multiple_choice için),
+    "correct_answer": "Doğru cevap",
+    "explanation": "Cevabın kısa açıklaması"
+  }}
+]
+
+JSON dizisinden önce veya sonra herhangi bir metin ekleme.
+Her soru için question_type alanını "{exam_instruction["question_type"]}" olarak ayarla.
+Tüm soruları ve açıklamaları Türkçe dilinde oluştur."""
         
         # Generate content using Gemini
         # First, let's try to list available models for debugging
@@ -196,8 +247,15 @@ Do not include any text before or after the JSON array."""
         if not model:
             raise HTTPException(status_code=500, detail="No available Gemini models found")
         
+        # Log the exam type and prompt for debugging
+        logging.info(f"Creating exam with type: {exam_type}")
+        logging.info(f"Question type constraint: {exam_instruction['question_type']}")
+        logging.info(f"Prompt preview: {prompt[:300]}...")
+        
         response = model.generate_content(prompt)
         response_text = response.text.strip()
+        
+        logging.info(f"AI response preview: {response_text[:300]}...")
         
         # Parse response
         import json
@@ -207,6 +265,10 @@ Do not include any text before or after the JSON array."""
             response_text = response_text.rsplit("```", 1)[0]
         
         questions_data = json.loads(response_text)
+        
+        # Log the question types generated
+        question_types = [q.get("question_type") for q in questions_data]
+        logging.info(f"Generated question types: {question_types}")
         
         # Convert to Question objects
         questions = []
@@ -277,11 +339,14 @@ async def login(credentials: UserLogin):
 @api_router.post("/exams/create", response_model=Exam)
 async def create_exam(
     pdf: UploadFile = File(...),
-    exam_type: str = "mixed",
-    difficulty: str = "medium",
-    num_questions: int = 10,
+    exam_type: str = Form("mixed"),
+    difficulty: str = Form("medium"),
+    num_questions: int = Form(10),
     current_user: dict = Depends(get_current_user)
 ):
+    # Log received parameters for debugging
+    logging.info(f"Received exam parameters - Type: {exam_type}, Difficulty: {difficulty}, Questions: {num_questions}")
+    
     # Validate PDF
     if not pdf.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
@@ -344,6 +409,26 @@ async def get_exam(exam_id: str, current_user: dict = Depends(get_current_user))
         exam["created_at"] = datetime.fromisoformat(exam["created_at"])
     
     return exam
+
+@api_router.delete("/exams/{exam_id}")
+async def delete_exam(exam_id: str, current_user: dict = Depends(get_current_user)):
+    """Delete an exam"""
+    # Check if exam exists and belongs to user
+    exam = await db.exams.find_one({"id": exam_id, "user_id": current_user["id"]}, {"_id": 0})
+    
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    
+    # Delete the exam
+    result = await db.exams.delete_one({"id": exam_id, "user_id": current_user["id"]})
+    
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    
+    # Also delete related exam results
+    await db.exam_results.delete_many({"exam_id": exam_id})
+    
+    return {"message": "Exam deleted successfully"}
 
 @api_router.post("/exams/submit", response_model=ExamResult)
 async def submit_exam(submission: ExamSubmission, current_user: dict = Depends(get_current_user)):

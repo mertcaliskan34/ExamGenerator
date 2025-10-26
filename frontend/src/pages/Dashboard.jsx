@@ -4,7 +4,7 @@ import axios from "axios";
 import { toast } from "sonner";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
-import { FileText, Plus, LogOut, History, TrendingUp, BookOpen } from "lucide-react";
+import { FileText, Plus, LogOut, History, TrendingUp, BookOpen, Trash2 } from "lucide-react";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -59,6 +59,21 @@ export default function Dashboard() {
       mixed: "Karışık"
     };
     return labels[type] || type;
+  };
+
+  const handleDeleteExam = async (examId, examTitle, event) => {
+    event.stopPropagation(); // Prevent card click
+    
+    if (window.confirm(`"${examTitle}" sınavını silmek istediğinizden emin misiniz? Bu işlem geri alınamaz.`)) {
+      try {
+        await axios.delete(`${API}/exams/${examId}`);
+        toast.success("Sınav başarıyla silindi");
+        fetchExams(); // Refresh the list
+      } catch (error) {
+        toast.error("Sınav silinirken hata oluştu");
+        console.error("Delete error:", error);
+      }
+    }
   };
 
   return (
@@ -172,12 +187,23 @@ export default function Dashboard() {
                       <div className="w-12 h-12 rounded-xl flex items-center justify-center" style={{ background: 'rgba(102, 126, 234, 0.1)' }}>
                         <FileText className="w-6 h-6" style={{ color: '#667eea' }} />
                       </div>
-                      <span
-                        className="px-3 py-1 rounded-full text-xs font-semibold text-white"
-                        style={{ background: getDifficultyColor(exam.difficulty) }}
-                      >
-                        {exam.difficulty === 'easy' ? 'Kolay' : exam.difficulty === 'medium' ? 'Orta' : 'Zor'}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="px-3 py-1 rounded-full text-xs font-semibold text-white"
+                          style={{ background: getDifficultyColor(exam.difficulty) }}
+                        >
+                          {exam.difficulty === 'easy' ? 'Kolay' : exam.difficulty === 'medium' ? 'Orta' : 'Zor'}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
+                          onClick={(e) => handleDeleteExam(exam.id, exam.title, e)}
+                          data-testid={`delete-exam-${exam.id}`}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
                     </div>
                     <CardTitle className="text-lg line-clamp-2">{exam.title}</CardTitle>
                     <CardDescription>
