@@ -56,6 +56,7 @@ export default function Dashboard() {
       true_false: "Doğru/Yanlış",
       fill_blank: "Boşluk Doldurma",
       open_ended: "Klasik",
+      image_based: "Görsel Tabanlı",
       mixed: "Karışık"
     };
     return labels[type] || type;

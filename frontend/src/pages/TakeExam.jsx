@@ -130,7 +130,8 @@ export default function TakeExam() {
                       <span className="px-3 py-1 rounded-full text-xs font-semibold" style={{ background: 'rgba(102, 126, 234, 0.1)', color: '#667eea' }}>
                         {question.question_type === 'multiple_choice' ? 'Çoktan Seçmeli' :
                          question.question_type === 'true_false' ? 'Doğru/Yanlış' :
-                         question.question_type === 'fill_blank' ? 'Boşluk Doldurma' : 'Klasik'}
+                         question.question_type === 'fill_blank' ? 'Boşluk Doldurma' :
+                         question.question_type === 'image_based' ? 'Görsel Tabanlı' : 'Klasik'}
                       </span>
                     </CardDescription>
                   </div>
@@ -193,6 +194,39 @@ export default function TakeExam() {
                     className="mt-2 min-h-[120px]"
                     data-testid={`open-ended-textarea-${question.id}`}
                   />
+                )}
+
+                {question.question_type === 'image_based' && (
+                  <div className="space-y-4">
+                    {/* Display image if available */}
+                    {question.image_data && (
+                      <div className="flex justify-center">
+                        <img 
+                          src={`data:image/jpeg;base64,${question.image_data}`}
+                          alt="Soru görseli"
+                          className="max-w-full h-auto rounded-lg shadow-md border"
+                          style={{ maxHeight: '400px' }}
+                          data-testid={`question-image-${question.id}`}
+                        />
+                      </div>
+                    )}
+                    
+                    {/* Multiple choice options for image-based questions */}
+                    <RadioGroup
+                      value={answers[question.id] || ""}
+                      onValueChange={(value) => handleAnswerChange(question.id, value)}
+                      className="space-y-3"
+                    >
+                      {question.options?.map((option, optIdx) => (
+                        <div key={optIdx} className="flex items-center space-x-3 option-btn" data-testid={`option-${question.id}-${optIdx}`}>
+                          <RadioGroupItem value={option} id={`${question.id}-${optIdx}`} />
+                          <Label htmlFor={`${question.id}-${optIdx}`} className="flex-1 cursor-pointer">
+                            {option}
+                          </Label>
+                        </div>
+                      ))}
+                    </RadioGroup>
+                  </div>
                 )}
               </CardContent>
             </Card>

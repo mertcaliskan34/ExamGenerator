@@ -145,6 +145,7 @@ export default function CreateExam() {
                     <SelectItem value="true_false" data-testid="exam-type-true-false">Doğru/Yanlış</SelectItem>
                     <SelectItem value="fill_blank" data-testid="exam-type-fill-blank">Boşluk Doldurma</SelectItem>
                     <SelectItem value="open_ended" data-testid="exam-type-open-ended">Klasik</SelectItem>
+                    <SelectItem value="image_based" data-testid="exam-type-image-based">Görsel Tabanlı</SelectItem>
                     <SelectItem value="mixed" data-testid="exam-type-mixed">Karışık</SelectItem>
                   </SelectContent>
                 </Select>

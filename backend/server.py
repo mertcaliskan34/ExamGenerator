@@ -15,6 +15,10 @@ from passlib.context import CryptContext
 import tempfile
 from PyPDF2 import PdfReader
 import google.generativeai as genai
+from pdf2image import convert_from_path
+from PIL import Image
+import base64
+import io
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -57,13 +61,14 @@ class User(BaseModel):
 class Question(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     question_text: str
-    question_type: Literal["multiple_choice", "true_false", "fill_blank", "open_ended"]
+    question_type: Literal["multiple_choice", "true_false", "fill_blank", "open_ended", "image_based"]
     options: Optional[List[str]] = None
     correct_answer: str
     explanation: Optional[str] = None
+    image_data: Optional[str] = None  # Base64 encoded image
 
 class ExamCreate(BaseModel):
-    exam_type: Literal["multiple_choice", "true_false", "fill_blank", "open_ended", "mixed"]
+    exam_type: Literal["multiple_choice", "true_false", "fill_blank", "open_ended", "image_based", "mixed"]
     difficulty: Literal["easy", "medium", "hard"]
     num_questions: int = Field(ge=5, le=50)
 
@@ -135,6 +140,254 @@ def extract_text_from_pdf(pdf_path: str) -> str:
         text += page.extract_text()
     return text
 
+def extract_images_from_pdf(pdf_path: str) -> List[str]:
+    """Extract images from PDF and return as base64 strings"""
+    try:
+        # Try to convert PDF pages to images
+        try:
+            images = convert_from_path(pdf_path, dpi=150, fmt='jpeg')
+        except Exception as e:
+            logging.warning(f"pdf2image failed, trying alternative method: {str(e)}")
+            # Alternative: Use PyPDF2 to extract images directly
+            return extract_images_with_pypdf2(pdf_path)
+        
+        base64_images = []
+        for img in images[:5]:  # Limit to first 5 pages to avoid too many images
+            # Resize image if too large
+            max_size = 1024
+            if img.width > max_size or img.height > max_size:
+                img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+            
+            # Convert to base64
+            buffered = io.BytesIO()
+            img.save(buffered, format="JPEG", quality=85)
+            img_base64 = base64.b64encode(buffered.getvalue()).decode()
+            base64_images.append(img_base64)
+        
+        return base64_images
+    except Exception as e:
+        logging.error(f"Error extracting images from PDF: {str(e)}")
+        return []
+
+def extract_images_with_pypdf2(pdf_path: str) -> List[str]:
+    """Alternative method to extract images using PyPDF2"""
+    try:
+        from PyPDF2 import PdfReader
+        import fitz  # PyMuPDF
+        
+        # Try PyMuPDF first
+        try:
+            doc = fitz.open(pdf_path)
+            base64_images = []
+            
+            for page_num in range(min(5, len(doc))):  # First 5 pages
+                page = doc[page_num]
+                # Convert page to image
+                mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better quality
+                pix = page.get_pixmap(matrix=mat)
+                img_data = pix.tobytes("jpeg")
+                
+                # Convert to PIL Image
+                img = Image.open(io.BytesIO(img_data))
+                
+                # Resize if too large
+                max_size = 1024
+                if img.width > max_size or img.height > max_size:
+                    img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                
+                # Convert to base64
+                buffered = io.BytesIO()
+                img.save(buffered, format="JPEG", quality=85)
+                img_base64 = base64.b64encode(buffered.getvalue()).decode()
+                base64_images.append(img_base64)
+            
+            doc.close()
+            return base64_images
+            
+        except ImportError:
+            logging.warning("PyMuPDF not available, falling back to page images")
+            # Fallback: Convert each page as image
+            reader = PdfReader(pdf_path)
+            base64_images = []
+            
+            for page_num in range(min(5, len(reader.pages))):
+                # Create a simple page representation
+                page = reader.pages[page_num]
+                text = page.extract_text()
+                
+                # Create a simple text-based image representation
+                if text.strip():
+                    # Create a simple image with text content
+                    img = Image.new('RGB', (800, 600), color='white')
+                    # This is a simplified approach - in production you'd want proper text rendering
+                    base64_images.append(create_text_image_base64(text[:500]))
+            
+            return base64_images
+            
+    except Exception as e:
+        logging.error(f"Error with PyPDF2 image extraction: {str(e)}")
+        return []
+
+def create_text_image_base64(text: str) -> str:
+    """Create a simple text-based image and return as base64"""
+    try:
+        # Create a simple image with text
+        img = Image.new('RGB', (800, 600), color='white')
+        # For now, return a placeholder
+        buffered = io.BytesIO()
+        img.save(buffered, format="JPEG", quality=85)
+        return base64.b64encode(buffered.getvalue()).decode()
+    except Exception as e:
+        logging.error(f"Error creating text image: {str(e)}")
+        return ""
+
+async def generate_image_based_exam(pdf_path: str, difficulty: str, num_questions: int) -> List[Question]:
+    """Generate image-based exam questions using AI with visual analysis"""
+    try:
+        # Extract images from PDF
+        images = extract_images_from_pdf(pdf_path)
+        
+        if not images:
+            logging.warning("No images found in PDF, falling back to text-based exam")
+            # Fallback to text-based exam if no images found
+            pdf_text = extract_text_from_pdf(pdf_path)
+            if not pdf_text.strip():
+                raise HTTPException(status_code=400, detail="Could not extract content from PDF")
+            
+            # Generate text-based questions instead
+            return await generate_exam_with_ai(pdf_text, "multiple_choice", difficulty, num_questions)
+        
+        # Configure Google AI
+        genai.configure(api_key=GOOGLE_AI_KEY)
+        
+        # Convert difficulty to Turkish
+        difficulty_turkish = {
+            "easy": "kolay",
+            "medium": "orta", 
+            "hard": "zor"
+        }.get(difficulty, difficulty)
+        
+        # Create prompt for image-based questions
+        prompt = f"""Sen uzman bir sınav oluşturucususun. Verilen görsellere dayalı olarak yüksek kaliteli sınav soruları oluştur.
+
+Aşağıdaki görsellere dayalı olarak {num_questions} adet {difficulty_turkish} zorluk seviyesinde görsel tabanlı sınav sorusu oluştur.
+
+SORU TÜRÜ TALİMATI:
+SADECE görsel tabanlı sorular oluştur!
+- Her soru için 5 seçenek (A, B, C, D, E) hazırla
+- question_type her zaman 'image_based' olmalı
+- options alanını doldur
+- correct_answer sadece harf olmalı (A, B, C, D veya E)
+- Sorular görseldeki içeriği analiz etmeyi gerektirmeli
+- Başka türde soru oluşturma!
+
+GÖRSEL TANIMLAMA TALİMATI:
+- Soru metninde "Görsel 0", "Görsel 1" gibi sayfa numaraları KULLANMA!
+- Bunun yerine her görselin içeriğini tanımlayan açıklayıcı ifadeler kullan
+- Görselin türünü ve içeriğini belirten ifadeler kullan:
+
+ÖRNEKLER:
+- "Yukarıdaki akış diyagramına göre..." (süreç diyagramı için)
+- "Verilen grafikte gösterilen..." (grafik/chart için)
+- "Şemada belirtilen..." (teknik şema için)
+- "Tablodaki verilere göre..." (veri tablosu için)
+- "Diyagramda gösterilen..." (genel diyagram için)
+- "Resimde görülen..." (fotoğraf için)
+- "Çizelgede yer alan..." (çizelge için)
+- "Haritada işaretlenen..." (harita için)
+- "Organizasyon şemasında..." (organizasyon şeması için)
+- "Zaman çizelgesinde..." (timeline için)
+
+KURALLAR:
+- Görselin ne tür bir içerik olduğunu (diyagram, grafik, tablo, şema, resim vb.) belirt
+- Görselin ana konusunu veya amacını kısaca açıkla
+- "Yukarıdaki", "Verilen", "Şemada" gibi ifadelerle görsele atıf yap
+
+ÖNEMLİ: 
+- TÜM sorular image_based türünde olmalı
+- Sadece aşağıdaki yapıda geçerli bir JSON dizisi döndür:
+[
+  {{
+    "question_text": "Yukarıdaki akış diyagramına göre hangi süreç gösterilmektedir?",
+    "question_type": "image_based",
+    "options": ["A. Seçenek 1", "B. Seçenek 2", "C. Seçenek 3", "D. Seçenek 4", "E. Seçenek 5"],
+    "correct_answer": "A",
+    "explanation": "Cevabın kısa açıklaması",
+    "image_index": 0
+  }},
+  {{
+    "question_text": "Verilen grafikte gösterilen trend hangi dönemi kapsamaktadır?",
+    "question_type": "image_based",
+    "options": ["A. Seçenek 1", "B. Seçenek 2", "C. Seçenek 3", "D. Seçenek 4", "E. Seçenek 5"],
+    "correct_answer": "B",
+    "explanation": "Cevabın kısa açıklaması",
+    "image_index": 1
+  }}
+]
+
+JSON dizisinden önce veya sonra herhangi bir metin ekleme.
+Her soru için question_type alanını "image_based" olarak ayarla.
+image_index 0'dan başlayarak görsel numarasını belirt.
+Tüm soruları ve açıklamaları Türkçe dilinde oluştur."""
+        
+        # Generate content using Gemini with images
+        model_names_to_try = ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-pro-latest']
+        model = None
+        
+        for model_name in model_names_to_try:
+            try:
+                model = genai.GenerativeModel(model_name)
+                logging.info(f"Successfully created model for images: {model_name}")
+                break
+            except Exception as e:
+                logging.warning(f"Failed to create model {model_name}: {e}")
+                continue
+        
+        if not model:
+            raise HTTPException(status_code=500, detail="No available Gemini models found for image processing")
+        
+        # Prepare images for Gemini
+        image_parts = []
+        for i, img_base64 in enumerate(images):
+            image_parts.append({
+                "mime_type": "image/jpeg",
+                "data": img_base64
+            })
+        
+        # Generate content with images
+        response = model.generate_content([prompt] + image_parts)
+        response_text = response.text.strip()
+        
+        logging.info(f"AI response for images preview: {response_text[:300]}...")
+        
+        # Parse response
+        import json
+        if response_text.startswith("```"):
+            response_text = response_text.split("\n", 1)[1]
+            response_text = response_text.rsplit("```", 1)[0]
+        
+        questions_data = json.loads(response_text)
+        
+        # Convert to Question objects with images
+        questions = []
+        for q_data in questions_data:
+            img_idx = q_data.get("image_index", 0)
+            if img_idx < len(images):
+                question = Question(
+                    question_text=q_data["question_text"],
+                    question_type="image_based",
+                    options=q_data.get("options"),
+                    correct_answer=q_data["correct_answer"],
+                    explanation=q_data.get("explanation"),
+                    image_data=images[img_idx]  # Attach the base64 image
+                )
+                questions.append(question)
+        
+        return questions
+    except Exception as e:
+        logging.error(f"Error generating image-based exam: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate image-based exam: {str(e)}")
+
 async def generate_exam_with_ai(pdf_text: str, exam_type: str, difficulty: str, num_questions: int) -> List[Question]:
     """Generate exam questions using AI"""
     try:
@@ -144,7 +397,7 @@ async def generate_exam_with_ai(pdf_text: str, exam_type: str, difficulty: str, 
         # Create prompt based on exam type
         type_instruction = {
             "multiple_choice": {
-                "instruction": "SADECE çoktan seçmeli sorular oluştur. Her soru için 4 seçenek (A, B, C, D) hazırla. Doğru cevap harfini belirt.",
+                "instruction": "SADECE çoktan seçmeli sorular oluştur. Her soru için 5 seçenek (A, B, C, D, E) hazırla. Doğru cevap harfini belirt.",
                 "question_type": "multiple_choice"
             },
             "true_false": {
@@ -189,7 +442,7 @@ Aşağıdaki içeriğe dayalı olarak {num_questions} adet {difficulty_turkish} 
   {{
     "question_text": "Soru metni burada",
     "question_type": "multiple_choice" veya "true_false" veya "fill_blank" veya "open_ended",
-    "options": ["A. Seçenek 1", "B. Seçenek 2", "C. Seçenek 3", "D. Seçenek 4"] (sadece multiple_choice için),
+    "options": ["A. Seçenek 1", "B. Seçenek 2", "C. Seçenek 3", "D. Seçenek 4", "E. Seçenek 5"] (sadece multiple_choice için),
     "correct_answer": "Doğru cevap",
     "explanation": "Cevabın kısa açıklaması"
   }}
@@ -213,7 +466,7 @@ Aşağıdaki içeriğe dayalı olarak {num_questions} adet {difficulty_turkish} 
   {{
     "question_text": "Soru metni burada",
     "question_type": "{exam_instruction["question_type"]}",
-    "options": ["A. Seçenek 1", "B. Seçenek 2", "C. Seçenek 3", "D. Seçenek 4"] (sadece multiple_choice için),
+    "options": ["A. Seçenek 1", "B. Seçenek 2", "C. Seçenek 3", "D. Seçenek 4", "E. Seçenek 5"] (sadece multiple_choice için),
     "correct_answer": "Doğru cevap",
     "explanation": "Cevabın kısa açıklaması"
   }}
@@ -358,14 +611,19 @@ async def create_exam(
         tmp_path = tmp_file.name
     
     try:
-        # Extract text from PDF
-        pdf_text = extract_text_from_pdf(tmp_path)
-        
-        if not pdf_text.strip():
-            raise HTTPException(status_code=400, detail="Could not extract text from PDF")
-        
-        # Generate exam questions
-        questions = await generate_exam_with_ai(pdf_text, exam_type, difficulty, num_questions)
+        # Check if image-based exam
+        if exam_type == "image_based":
+            # Generate image-based questions directly from PDF
+            questions = await generate_image_based_exam(tmp_path, difficulty, num_questions)
+        else:
+            # Extract text from PDF
+            pdf_text = extract_text_from_pdf(tmp_path)
+            
+            if not pdf_text.strip():
+                raise HTTPException(status_code=400, detail="Could not extract text from PDF")
+            
+            # Generate exam questions
+            questions = await generate_exam_with_ai(pdf_text, exam_type, difficulty, num_questions)
         
         # Create exam
         exam = Exam(
