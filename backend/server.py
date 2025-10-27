@@ -19,6 +19,7 @@ from pdf2image import convert_from_path
 from PIL import Image
 import base64
 import io
+import random
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -143,16 +144,27 @@ def extract_text_from_pdf(pdf_path: str) -> str:
 def extract_images_from_pdf(pdf_path: str) -> List[str]:
     """Extract images from PDF and return as base64 strings"""
     try:
-        # Try to convert PDF pages to images
+        # Try to convert PDF pages to images - get all pages
         try:
             images = convert_from_path(pdf_path, dpi=150, fmt='jpeg')
+            logging.info(f"Successfully extracted {len(images)} pages from PDF")
         except Exception as e:
             logging.warning(f"pdf2image failed, trying alternative method: {str(e)}")
             # Alternative: Use PyPDF2 to extract images directly
             return extract_images_with_pypdf2(pdf_path)
-        
+    
         base64_images = []
-        for img in images[:5]:  # Limit to first 5 pages to avoid too many images
+        
+        # If we have more than 15 pages, randomly select 15 pages for better diversity
+        # This ensures we get images from different parts of the document
+        if len(images) > 15:
+            selected_images = random.sample(images, 15)
+        else:
+            selected_images = images
+        
+        logging.info(f"Selected {len(selected_images)} random pages from {len(images)} total pages")
+        
+        for img in selected_images:
             # Resize image if too large
             max_size = 1024
             if img.width > max_size or img.height > max_size:
@@ -180,7 +192,18 @@ def extract_images_with_pypdf2(pdf_path: str) -> List[str]:
             doc = fitz.open(pdf_path)
             base64_images = []
             
-            for page_num in range(min(5, len(doc))):  # First 5 pages
+            # Randomly select pages for better diversity
+            total_pages = len(doc)
+            if total_pages > 15:
+                # Select 15 random pages from the entire document
+                selected_pages = random.sample(range(total_pages), 15)
+            else:
+                # Use all pages if less than 15
+                selected_pages = range(total_pages)
+            
+            logging.info(f"Selected {len(selected_pages)} random pages from {total_pages} total pages")
+            
+            for page_num in selected_pages:
                 page = doc[page_num]
                 # Convert page to image
                 mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better quality
@@ -210,7 +233,18 @@ def extract_images_with_pypdf2(pdf_path: str) -> List[str]:
             reader = PdfReader(pdf_path)
             base64_images = []
             
-            for page_num in range(min(5, len(reader.pages))):
+            # Randomly select pages for better diversity
+            total_pages = len(reader.pages)
+            if total_pages > 15:
+                # Select 15 random pages from the entire document
+                selected_pages = random.sample(range(total_pages), 15)
+            else:
+                # Use all pages if less than 15
+                selected_pages = range(total_pages)
+            
+            logging.info(f"Selected {len(selected_pages)} random pages from {total_pages} total pages (fallback)")
+            
+            for page_num in selected_pages:
                 # Create a simple page representation
                 page = reader.pages[page_num]
                 text = page.extract_text()
@@ -240,6 +274,24 @@ def create_text_image_base64(text: str) -> str:
     except Exception as e:
         logging.error(f"Error creating text image: {str(e)}")
         return ""
+
+def get_random_pdf_sections(pdf_text: str, num_sections: int = 3) -> str:
+    """Get random sections from PDF text for more diverse questions"""
+    try:
+        # Split text into paragraphs
+        paragraphs = [p.strip() for p in pdf_text.split('\n\n') if p.strip()]
+        
+        if len(paragraphs) <= num_sections:
+            return pdf_text
+        
+        # Select random paragraphs
+        selected_paragraphs = random.sample(paragraphs, min(num_sections, len(paragraphs)))
+        
+        # Join selected paragraphs
+        return '\n\n'.join(selected_paragraphs)
+    except Exception as e:
+        logging.error(f"Error selecting random PDF sections: {str(e)}")
+        return pdf_text
 
 async def generate_image_based_exam(pdf_path: str, difficulty: str, num_questions: int) -> List[Question]:
     """Generate image-based exam questions using AI with visual analysis"""
@@ -281,7 +333,9 @@ SADECE görsel tabanlı sorular oluştur!
 - Sorular görseldeki içeriği analiz etmeyi gerektirmeli
 - Başka türde soru oluşturma!
 
-GÖRSEL TANIMLAMA TALİMATI:
+GÖRSEL SEÇİMİ VE TANIMLAMA TALİMATI:
+- Her soru için PDF'deki görsellerden RASTGELE birini seç!
+- Tüm görselleri analiz et ve farklı görsellerden sorular oluştur
 - Soru metninde "Görsel 0", "Görsel 1" gibi sayfa numaraları KULLANMA!
 - Bunun yerine her görselin içeriğini tanımlayan açıklayıcı ifadeler kullan
 - Görselin türünü ve içeriğini belirten ifadeler kullan:
@@ -346,7 +400,7 @@ Tüm soruları ve açıklamaları Türkçe dilinde oluştur."""
         if not model:
             raise HTTPException(status_code=500, detail="No available Gemini models found for image processing")
         
-        # Prepare images for Gemini
+        # Prepare images for Gemini - send all images for context
         image_parts = []
         for i, img_base64 in enumerate(images):
             image_parts.append({
@@ -368,20 +422,20 @@ Tüm soruları ve açıklamaları Türkçe dilinde oluştur."""
         
         questions_data = json.loads(response_text)
         
-        # Convert to Question objects with images
+        # Convert to Question objects with images - use random image selection
         questions = []
         for q_data in questions_data:
-            img_idx = q_data.get("image_index", 0)
-            if img_idx < len(images):
-                question = Question(
-                    question_text=q_data["question_text"],
-                    question_type="image_based",
-                    options=q_data.get("options"),
-                    correct_answer=q_data["correct_answer"],
-                    explanation=q_data.get("explanation"),
-                    image_data=images[img_idx]  # Attach the base64 image
-                )
-                questions.append(question)
+            # Randomly select an image for each question
+            random_img_idx = random.randint(0, len(images) - 1)
+            question = Question(
+                question_text=q_data["question_text"],
+                question_type="image_based",
+                options=q_data.get("options"),
+                correct_answer=q_data["correct_answer"],
+                explanation=q_data.get("explanation"),
+                image_data=images[random_img_idx]  # Attach randomly selected image
+            )
+            questions.append(question)
         
         return questions
     except Exception as e:
@@ -427,6 +481,9 @@ async def generate_exam_with_ai(pdf_text: str, exam_type: str, difficulty: str, 
         
         exam_instruction = type_instruction[exam_type]
         
+        # Get random sections from PDF for more diverse questions
+        random_pdf_content = get_random_pdf_sections(pdf_text, num_sections=5)
+        
         if exam_type == "mixed":
             prompt = f"""Sen uzman bir sınav oluşturucususun. Verilen içeriğe dayalı olarak yüksek kaliteli sınav soruları oluştur.
 
@@ -434,8 +491,10 @@ Aşağıdaki içeriğe dayalı olarak {num_questions} adet {difficulty_turkish} 
 
 {exam_instruction["instruction"]}
 
+ÖNEMLİ: İçerikten farklı bölümlerden sorular oluştur. Her soru farklı bir konu veya kavramdan gelsin.
+
 İçerik:
-{pdf_text[:4000]}
+{random_pdf_content[:4000]}
 
 ÖNEMLİ: Sadece aşağıdaki yapıda geçerli bir JSON dizisi döndür:
 [
@@ -456,8 +515,10 @@ Aşağıdaki içeriğe dayalı olarak {num_questions} adet {difficulty_turkish} 
 
 {exam_instruction["instruction"]}
 
+ÖNEMLİ: İçerikten farklı bölümlerden sorular oluştur. Her soru farklı bir konu veya kavramdan gelsin.
+
 İçerik:
-{pdf_text[:4000]}
+{random_pdf_content[:4000]}
 
 ÖNEMLİ: 
 - TÜM sorular {exam_instruction["question_type"]} türünde olmalı
